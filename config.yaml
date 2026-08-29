@@ -1,0 +1,31 @@
+agent:
+  name: "JARVIS"
+  version: "0.0.1"
+  language: "ru"
+
+ollama:
+  url: "http://127.0.0.1:11434/api/chat"
+  fast_model: "qwen2.5:3b"
+  smart_model: "qwen2.5:7b"
+  vision_model: "llava"
+
+memory:
+  profile_file: "memory/profile.json"
+  chroma_dir: "memory/chroma"
+
+training:
+  examples_file: "training/approved_examples.jsonl"
+  dataset_file: "training/dataset.jsonl"
+  lora_output: "training/lora_adapter"
+
+tools:
+  allowed_apps:
+    блокнот: "notepad.exe"
+    калькулятор: "calc.exe"
+    проводник: "explorer.exe"
+    paint: "mspaint.exe"
+
+voice:
+  enabled: true
+  rate: 170
+  language: "ru-RU"

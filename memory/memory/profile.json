@@ -1,0 +1,26 @@
+{
+  "user": {
+    "name": null,
+    "preferred_language": "ru",
+    "communication_style": "понятный"
+  },
+  "preferences": {
+    "answer_length": "medium",
+    "voice_enabled": true,
+    "camera_enabled": false
+  },
+  "projects": [],
+  "goals": [],
+  "important_facts": [],
+  "permissions": {
+    "camera": false,
+    "face_recognition": false,
+    "screen_control": false,
+    "file_management": false,
+    "browser_control": false
+  },
+  "face_identity": {
+    "registered": false,
+    "encoding_file": "E:\\projects\\Jarvis\\memory\\face\\face_encoding.json"
+  }
+}

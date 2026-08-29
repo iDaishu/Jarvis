@@ -1,0 +1,24 @@
+# Основные
+requests>=2.31.0
+pyyaml>=6.0
+
+# Память и эмбеддинги
+chromadb>=0.4.22
+sentence-transformers>=2.2.2
+
+# Системные
+psutil>=5.9.5
+mss>=9.0.1
+Pillow>=10.0.0
+opencv-python>=4.8.0
+
+# Голос
+vosk>=0.3.45
+sounddevice>=0.4.6
+webrtcvad>=2.0.10
+numpy>=1.24.0
+pyttsx3>=2.90
+
+# setuptools (важно для pkg_resources)
+setuptools>=69.0.0
+wheel>=0.42.0
