@@ -1,3 +1,4 @@
+# requirements.txt (обновленный)
 # Основные
 requests>=2.31.0
 pyyaml>=6.0
@@ -12,13 +13,28 @@ mss>=9.0.1
 Pillow>=10.0.0
 opencv-python>=4.8.0
 
-# Голос
-vosk>=0.3.45
+# Аудио
 sounddevice>=0.4.6
-webrtcvad>=2.0.10
 numpy>=1.24.0
-pyttsx3>=2.90
+scipy>=1.10.0
+webrtcvad>=2.0.10
+soundfile>=0.12.1
 
-# setuptools (важно для pkg_resources)
+# ASR - Whisper (основной)
+openai-whisper>=20231117
+torch>=2.0.0
+
+# TTS - Silero (основной)
+torchaudio>=2.0.0
+omegaconf>=2.3.0
+
+# TTS - Piper (резервный) - опционально
+# onnxruntime>=1.15.0
+# pyttsx3>=2.90
+
+# Шумоподавление
+noisereduce>=3.0.0
+
+# setuptools
 setuptools>=69.0.0
 wheel>=0.42.0

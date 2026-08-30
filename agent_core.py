@@ -1,8 +1,5 @@
-"""
-agent_core.py
-Ядро локального ИИ-агента JARVIS для Windows.
-Работает в фоновом режиме с постоянным прослушиванием.
-"""
+# agent_core.py
+"""Обновлённое ядро ИИ-агента с улучшенным голосовым интерфейсом."""
 
 from __future__ import annotations
 
@@ -55,13 +52,13 @@ try:
 except ImportError:
     psutil = None
 
-# ---------- Импорт голосового интерфейса ----------
+# ---------- Импорт улучшенного голосового интерфейса ----------
 try:
-    from voice_interface import VoiceInterface
-    print("✅ Голосовой интерфейс загружен")
+    from voice.enhanced_voice_interface import EnhancedVoiceInterface
+    print("✅ Улучшенный голосовой интерфейс загружен")
 except ImportError as e:
     print(f"⚠️ Ошибка загрузки голосового интерфейса: {e}")
-    VoiceInterface = None
+    EnhancedVoiceInterface = None
 
 # ---------- Пути ----------
 MEMORY_DIR = BASE_DIR / "memory"
@@ -308,17 +305,9 @@ class Agent:
         self.tools = ComputerTools()
         self.camera = CameraManager(self.json_memory)
         
-        # Инициализация голосового интерфейса
-        if VoiceInterface is not None:
-            try:
-                self.voice = VoiceInterface(wake_words=["джарвис", "jarvis"])
-                print("🎤 Голосовой интерфейс: Vosk + Piper")
-            except Exception as e:
-                print(f"⚠️ Ошибка инициализации голоса: {e}")
-                self.voice = None
-        else:
-            self.voice = None
-            print("⚠️ Голосовой интерфейс недоступен")
+        # Инициализация улучшенного голосового интерфейса
+        self.voice = None
+        self._init_voice()
         
         self.session_id = uuid.uuid4().hex
         self.name = CONFIG["agent"]["name"]
@@ -326,12 +315,46 @@ class Agent:
         self.is_running = True
         self.processing_lock = threading.Lock()
         
-        # Флаг для вывода в консоль
+        # Флаги
         self.quiet_mode = False
+        self._welcome_said = False
         
         # Статистика
         self.command_count = 0
         self.last_command_time = 0
+    
+    def _init_voice(self):
+        """Инициализирует голосовой интерфейс."""
+        if EnhancedVoiceInterface is None:
+            print("⚠️ Улучшенный голосовой интерфейс недоступен")
+            return
+        
+        try:
+            voice_config = {
+                'asr': {
+                    'primary': 'whisper',
+                    'whisper_model': 'small',
+                    'language': 'ru'
+                },
+                'tts': {
+                    'primary': 'silero',
+                    'language': 'ru',
+                    'speaker': 'xenia'
+                },
+                'noise_reduction': {
+                    'enabled': True
+                },
+                'emotions': {
+                    'enabled': True
+                }
+            }
+            
+            self.voice = EnhancedVoiceInterface(voice_config)
+            print("🎤 Улучшенный голосовой интерфейс: Whisper + Silero + эмоции")
+            
+        except Exception as e:
+            print(f"⚠️ Ошибка инициализации голосового интерфейса: {e}")
+            self.voice = None
 
     def context(self, user_text: str) -> str:
         profile = json.dumps(self.json_memory.load(), ensure_ascii=False, indent=2)
@@ -397,21 +420,42 @@ class Agent:
         if self.remember_important(user_text):
             response = "Запомнил!"
             if voice_output and self.voice:
-                self.voice.speak(response, async_mode=True)
+                self.voice.speak_with_emotion(response, "радость")
             return response
 
         # Проверка на инструменты
         tool_result = self.execute_safe_command(user_text)
         if tool_result:
             if voice_output and self.voice:
-                self.voice.speak(tool_result, async_mode=True)
+                # Определяем эмоцию для ответа
+                if "сохранён" in tool_result or "запущено" in tool_result:
+                    self.voice.speak_with_emotion(tool_result, "радость")
+                else:
+                    self.voice.speak(tool_result)
             return tool_result
 
         # Обычный запрос к ИИ
-        response = self.ask(user_text)
-        if voice_output and self.voice:
-            self.voice.speak(response, async_mode=True)
-        return response
+        try:
+            response = self.ask(user_text)
+            
+            if voice_output and self.voice:
+                # Выбираем эмоцию для ответа
+                if "!" in response or "отлично" in response.lower():
+                    self.voice.speak_with_emotion(response, "радость")
+                elif "?" in response:
+                    self.voice.speak_with_emotion(response, "задумчивость")
+                elif "к сожалению" in response.lower() or "жаль" in response.lower():
+                    self.voice.speak_with_emotion(response, "грусть")
+                else:
+                    self.voice.speak(response)
+            
+            return response
+            
+        except Exception as e:
+            error_msg = f"Произошла ошибка: {str(e)}"
+            if voice_output and self.voice:
+                self.voice.speak_with_emotion("Произошла ошибка, попробуйте ещё раз", "грусть")
+            return error_msg
 
     def start_voice_mode(self):
         """Запускает голосовой режим с постоянным прослушиванием."""
@@ -423,52 +467,55 @@ class Agent:
             print("🎤 Голосовой режим уже включён")
             return
 
-        print("\n🎤 Запуск голосового режима с постоянным прослушиванием...")
-        print("   Говорите в микрофон, я буду отвечать на команды")
-        print("   (Для выхода введите 'exit' в консоли)\n")
-        
-        def on_wake():
-            """Вызывается при обнаружении речи."""
-            # В режиме постоянного прослушивания просто показываем индикатор
-            if not self.quiet_mode:
-                print("🎤 Слышу вас...")
+        print("\n🎤 Запуск голосового режима с улучшенным распознаванием...")
+        print("   🎯 Whisper ASR + Silero TTS + эмоциональная окраска")
+        print("   Говорите в микрофон, я буду отвечать голосом")
+        print("   (Для выхода скажите 'выход' или введите 'exit' в консоли)\n")
         
         def on_transcription(text):
             """Вызывается при распознавании команды."""
             if not text or not text.strip():
                 return
-                
+            
             if not self.quiet_mode:
                 print(f"🎤 Распознано: {text}")
             
             try:
                 # Проверяем специальные команды выхода
                 lower_text = text.lower().strip()
-                if lower_text in {"выход", "завершить работу", "выключиться"}:
+                if lower_text in {"выход", "завершить работу", "выключиться", "пока"}:
                     print("👋 Завершение работы по голосовой команде...")
+                    if self.voice:
+                        self.voice.speak_with_emotion("До свидания! Было приятно пообщаться.", "радость")
+                        time.sleep(1)
                     self.stop()
                     return
                 
                 # Обрабатываем команду
                 response = self.process(text, voice_output=True)
-                if not self.quiet_mode:
-                    print(f"🤖 {response}")
+                if not self.quiet_mode and response:
+                    print(f"🤖 {response[:200]}..." if len(response) > 200 else f"🤖 {response}")
                     
             except Exception as e:
                 error_msg = f"Произошла ошибка: {str(e)}"
                 print(f"❌ {error_msg}")
                 if self.voice:
-                    self.voice.speak("Произошла ошибка", async_mode=True)
+                    self.voice.speak_with_emotion("Произошла ошибка", "грусть")
 
-        # Запускаем голосовой режим с постоянным прослушиванием
+        # Запускаем голосовой режим
         try:
-            self.voice.start_voice_mode(
-                on_wake=on_wake,
-                on_transcription=on_transcription
-            )
-            self.voice_mode = True
-            print("🎤 Голосовой режим активирован. Говорите в микрофон.")
-            
+            if self.voice.start_listening(on_transcription):
+                self.voice_mode = True
+                print("🎤 Голосовой режим активирован. Говорите в микрофон.")
+                
+                # Приветствие
+                if not self._welcome_said:
+                    self._welcome_said = True
+                    greeting = "Привет! Я Джарвис, ваш голосовой помощник. Я вас слушаю."
+                    self.voice.speak_with_emotion(greeting, "радость")
+            else:
+                print("❌ Не удалось запустить голосовой режим")
+                
         except Exception as e:
             print(f"❌ Ошибка в голосовом режиме: {e}")
             self.voice_mode = False
@@ -480,7 +527,7 @@ class Agent:
 
         if self.voice_mode:
             self.voice_mode = False
-            self.voice.stop_voice_mode()
+            self.voice.stop_listening()
             print("🎤 Голосовой режим выключен")
 
     def stop(self):
@@ -498,14 +545,21 @@ class Agent:
 
 # ---------- Точка входа ----------
 def main():
-    print("=" * 50)
-    print(f"🤖 {CONFIG['agent']['name']} — локальный ИИ-помощник")
-    print("=" * 50)
-    print("\n💡 Режим работы: постоянное прослушивание микрофона")
-    print("   Говорите в микрофон, агент будет отвечать голосом")
-    print("   В консоли введите 'exit' для завершения")
-    print("   Скажите 'выход' голосом для завершения")
-    print("=" * 50)
+    print("=" * 60)
+    print(f"🤖 {CONFIG['agent']['name']} — улучшенный ИИ-помощник")
+    print("=" * 60)
+    print("\n💡 Особенности:")
+    print("   🎯 Whisper ASR — точное распознавание речи")
+    print("   🔊 Silero TTS — естественный синтез речи")
+    print("   🎭 Эмоциональная окраска ответов")
+    print("   🎤 Постоянное прослушивание микрофона")
+    print("   💬 Консольный ввод для тестирования")
+    print("=" * 60)
+    print("\n📌 Команды:")
+    print("   - Скажите что-нибудь в микрофон")
+    print("   - Введите 'exit' в консоли для выхода")
+    print("   - Скажите 'выход' голосом для выхода")
+    print("=" * 60)
     print()
 
     agent = Agent()
@@ -521,7 +575,7 @@ def main():
                 if not user_input:
                     continue
 
-                if user_input.lower() in {"выход", "exit", "quit"}:
+                if user_input.lower() in {"выход", "exit", "quit", "q"}:
                     agent.stop()
                     break
 
@@ -529,7 +583,8 @@ def main():
                 if agent.voice_mode:
                     print(f"📝 Консольная команда: {user_input}")
                     response = agent.process(user_input, voice_output=True)
-                    print(f"🤖 {response}")
+                    if response:
+                        print(f"🤖 {response[:200]}..." if len(response) > 200 else f"🤖 {response}")
                 else:
                     print("⚠️ Голосовой режим отключён")
 

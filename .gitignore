@@ -24,3 +24,9 @@ env/
 *.mp3
 models/
 vosk-model*/
+
+# Memory/Chroma DB
+memory/
+*.bin
+*.sqlite3
+chroma/

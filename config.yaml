@@ -1,6 +1,7 @@
+# config.yaml
 agent:
   name: "JARVIS"
-  version: "0.0.1"
+  version: "1.0.0"
   language: "ru"
 
 ollama:
@@ -12,6 +13,7 @@ ollama:
 memory:
   profile_file: "memory/profile.json"
   chroma_dir: "memory/chroma"
+  voice_profile: "memory/voice_profile.json"
 
 training:
   examples_file: "training/approved_examples.jsonl"
@@ -27,5 +29,28 @@ tools:
 
 voice:
   enabled: true
-  rate: 170
-  language: "ru-RU"
+  
+  # ASR настройки
+  asr:
+    primary: "whisper"  # whisper, vosk
+    whisper_model: "small"  # tiny, base, small, medium, large
+    sample_rate: 16000
+    vad_mode: 1
+  
+  # TTS настройки
+  tts:
+    primary: "silero"  # silero, piper
+    language: "ru"
+    speaker: "xenia"  # xenia (женский), eugene (мужской)
+    rate: 170
+    volume: 1.0
+  
+  # Шумоподавление
+  noise_reduction:
+    enabled: true
+    prop_decrease: 0.8
+    
+  # Эмоции
+  emotions:
+    enabled: true
+    intensity: 0.5
