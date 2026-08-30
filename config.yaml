@@ -5,10 +5,10 @@ agent:
   language: "ru"
 
 ollama:
-  url: "http://127.0.0.1:11434/api/chat"
-  fast_model: "qwen2.5:3b"
-  smart_model: "qwen2.5:7b"
-  vision_model: "llava"
+  url: "http://127.0.0.1:11434/api/generate"
+  fast_model: "qwen2.5:7b"    # Быстрые ответы
+  smart_model: "aiconjured/Qwen3.8-27B-NVFP4-MTP-COMPACT-LOW"  # Сложные задачи
+  vision_model: "llava"               # Для изображений
 
 memory:
   profile_file: "memory/profile.json"

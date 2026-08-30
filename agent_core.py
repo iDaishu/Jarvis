@@ -1,4 +1,4 @@
-"""Обновлённое ядро ИИ-агента с Vosk."""
+"""Обновлённое ядро ИИ-агента с AEC и умной маршрутизацией."""
 
 from __future__ import annotations
 
@@ -51,13 +51,14 @@ try:
 except ImportError:
     psutil = None
 
-# ---------- Импорт улучшенного голосового интерфейса ----------
+# ---------- Импорт AEC голосового интерфейса ----------
 try:
-    from voice.enhanced_voice_interface import EnhancedVoiceInterface
-    print("✅ Улучшенный голосовой интерфейс загружен")
+    from voice.aec_voice_interface import AECVoiceInterface
+    print("✅ AEC Voice Interface загружен")
 except ImportError as e:
-    print(f"⚠️ Ошибка загрузки голосового интерфейса: {e}")
-    EnhancedVoiceInterface = None
+    print(f"⚠️ Ошибка загрузки AEC Voice Interface: {e}")
+    print("   Установите: pip install pywebrtc-audio sounddevice")
+    AECVoiceInterface = None
 
 # ---------- Пути ----------
 MEMORY_DIR = BASE_DIR / "memory"
@@ -65,6 +66,7 @@ PROFILE_FILE = MEMORY_DIR / CONFIG["memory"]["profile_file"]
 CHROMA_DIR = MEMORY_DIR / CONFIG["memory"]["chroma_dir"]
 SCREENSHOTS_DIR = BASE_DIR / "screenshots"
 
+# Используем /api/generate для совместимости
 OLLAMA_URL = CONFIG["ollama"]["url"]
 FAST_MODEL = CONFIG["ollama"]["fast_model"]
 SMART_MODEL = CONFIG["ollama"]["smart_model"]
@@ -201,19 +203,68 @@ class RagMemory:
 
 # ---------- Маршрутизация моделей ----------
 class ModelRouter:
-    """Выбирает модель по типу задачи."""
-
+    """Выбирает модель по типу задачи с логированием."""
+    
+    def __init__(self):
+        self.last_choice = None
+        self.choice_reason = None
+        self.choice_count = {
+            "fast": 0,
+            "smart": 0,
+            "vision": 0
+        }
+    
     def choose(self, text: str, has_image: bool = False) -> str:
         if has_image:
+            self.last_choice = VISION_MODEL
+            self.choice_reason = "vision"
+            self.choice_count["vision"] += 1
+            print(f"🖼️ Выбрана модель: {VISION_MODEL} (обработка изображения)")
             return VISION_MODEL
+        
         lower = text.lower()
+        
+        # Сложные задачи (используем SMART_MODEL)
         complex_markers = (
-            "напиши программу", "исправь код", "проанализируй",
-            "спроектируй", "подробно объясни", "архитектура",
+            "напиши программу", "напиши код", "исправь код", "проанализируй",
+            "спроектируй", "подробно объясни", "архитектура", "рефакторинг",
+            "оптимизируй", "создай класс", "напиши функцию", "алгоритм",
+            "структура данных", "сложная задача", "глубокий анализ",
+            "как устроен", "принцип работы", "паттерн",
         )
+        
+        # Средние задачи (используем FAST_MODEL)
+        medium_markers = (
+            "объясни", "расскажи", "что такое", "как работает",
+            "сравни", "в чем разница", "пример", "покажи",
+            "что значит", "как использовать",
+        )
+        
         if any(marker in lower for marker in complex_markers):
+            self.last_choice = SMART_MODEL
+            self.choice_reason = "complex"
+            self.choice_count["smart"] += 1
+            print(f"🧠 Выбрана модель: {SMART_MODEL} (сложный запрос)")
             return SMART_MODEL
+        
+        if any(marker in lower for marker in medium_markers):
+            self.last_choice = FAST_MODEL
+            self.choice_reason = "medium"
+            self.choice_count["fast"] += 1
+            print(f"⚡ Выбрана модель: {FAST_MODEL} (средний запрос)")
+            return FAST_MODEL
+        
+        self.last_choice = FAST_MODEL
+        self.choice_reason = "simple"
+        self.choice_count["fast"] += 1
+        print(f"⚡ Выбрана модель: {FAST_MODEL} (простой запрос)")
         return FAST_MODEL
+    
+    def get_stats(self) -> dict:
+        return self.choice_count.copy()
+    
+    def get_last_choice(self) -> tuple:
+        return self.last_choice, self.choice_reason
 
 
 # ---------- Инструменты ----------
@@ -304,7 +355,6 @@ class Agent:
         self.tools = ComputerTools()
         self.camera = CameraManager(self.json_memory)
         
-        # Инициализация улучшенного голосового интерфейса
         self.voice = None
         self._init_voice()
         
@@ -321,34 +371,35 @@ class Agent:
         self.last_command_time = 0
     
     def _init_voice(self):
-        """Инициализирует голосовой интерфейс."""
-        if EnhancedVoiceInterface is None:
-            print("⚠️ Улучшенный голосовой интерфейс недоступен")
+        if AECVoiceInterface is None:
+            print("⚠️ AEC Voice Interface недоступен")
             return
         
         try:
             voice_config = {
-                'asr': {
-                    'model_path': 'models/vosk/vosk-model-ru-0.22'
-                },
-                'tts': {
-                    'language': 'ru',
-                    'speaker': 'xenia'
-                },
-                'noise_reduction': {
-                    'enabled': True
-                },
-                'emotions': {
-                    'enabled': True
-                }
+                'asr': {'model_path': 'models/vosk/vosk-model-ru-0.22'},
+                'tts': {'language': 'ru', 'speaker': 'xenia'},
+                'emotions': {'enabled': True}
             }
             
-            self.voice = EnhancedVoiceInterface(voice_config)
-            print("🎤 Голосовой интерфейс: Vosk + Silero")
+            self.voice = AECVoiceInterface(
+                config=voice_config,
+                base_dir=BASE_DIR,
+                stream_delay_ms=100
+            )
+            print("🎤 AEC Voice Interface: микрофон всегда активен, эхо подавляется")
             
         except Exception as e:
-            print(f"⚠️ Ошибка инициализации голосового интерфейса: {e}")
+            print(f"⚠️ Ошибка инициализации AEC интерфейса: {e}")
             self.voice = None
+
+    def _check_ollama(self) -> bool:
+        """Проверяет, запущен ли Ollama."""
+        try:
+            response = requests.get("http://127.0.0.1:11434/api/tags", timeout=5)
+            return response.status_code == 200
+        except:
+            return False
 
     def context(self, user_text: str) -> str:
         profile = json.dumps(self.json_memory.load(), ensure_ascii=False, indent=2)
@@ -359,26 +410,92 @@ class Agent:
     def ask(self, user_text: str, has_image: bool = False) -> str:
         self.rag.add("user", user_text, self.session_id)
         model = self.router.choose(user_text, has_image)
+        
+        system_prompt = (
+            f"Ты {self.name}, локальный персональный ИИ-помощник. "
+            "Отвечай на русском языке. Учитывай память ниже.\n\n"
+            f"{self.context(user_text)}"
+        )
+        
+        # Для Ollama 0.33.2 используем /api/generate
         payload = {
             "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        f"Ты {self.name}, локальный персональный ИИ-помощник. "
-                        "Отвечай на русском языке. Учитывай память ниже.\n\n"
-                        f"{self.context(user_text)}"
-                    ),
-                },
-                {"role": "user", "content": user_text},
-            ],
+            "prompt": user_text,
+            "system": system_prompt,
             "stream": False,
+            "options": {
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "num_ctx": 4096,
+            }
         }
-        response = requests.post(OLLAMA_URL, json=payload, timeout=180)
-        response.raise_for_status()
-        answer = response.json()["message"]["content"]
-        self.rag.add("assistant", answer, self.session_id)
-        return answer
+        
+        try:
+            print(f"🔄 Запрос к модели {model}...")
+            response = requests.post(
+                "http://127.0.0.1:11434/api/generate",
+                json=payload,
+                timeout=180,
+                headers={"Content-Type": "application/json"}
+            )
+            
+            if response.status_code == 404:
+                # Если /api/generate не работает, пробуем /v1/generate
+                print("⚠️ /api/generate не найден, пробуем /v1/generate...")
+                response = requests.post(
+                    "http://127.0.0.1:11434/v1/generate",
+                    json={
+                        "model": model,
+                        "prompt": f"{system_prompt}\n\nUser: {user_text}\n\nAssistant:",
+                        "stream": False
+                    },
+                    timeout=180
+                )
+            
+            response.raise_for_status()
+            result = response.json()
+            
+            # Извлекаем ответ в зависимости от формата
+            if "response" in result:
+                answer = result["response"]
+            elif "message" in result and "content" in result["message"]:
+                answer = result["message"]["content"]
+            elif "choices" in result and len(result["choices"]) > 0:
+                answer = result["choices"][0].get("message", {}).get("content", "")
+            else:
+                answer = str(result)
+            
+            if not answer:
+                print("⚠️ Получен пустой ответ")
+                # Пробуем альтернативный формат
+                alt_payload = {
+                    "model": model,
+                    "prompt": f"{system_prompt}\n\nПользователь: {user_text}\n\nАссистент:",
+                    "stream": False,
+                    "options": {"temperature": 0.7}
+                }
+                response = requests.post(
+                    "http://127.0.0.1:11434/api/generate",
+                    json=alt_payload,
+                    timeout=180
+                )
+                response.raise_for_status()
+                answer = response.json().get("response", "")
+            
+            self.rag.add("assistant", answer, self.session_id)
+            return answer
+            
+        except requests.exceptions.RequestException as e:
+            error_msg = f"Ошибка запроса к Ollama: {str(e)}"
+            print(f"⚠️ {error_msg}")
+            
+            # Диагностика
+            print("\n💡 Диагностика:")
+            print(f"   - Модель: {model}")
+            print(f"   - URL: http://127.0.0.1:11434/api/generate")
+            print("   - Проверьте доступные модели: ollama list")
+            
+            return f"Извините, произошла ошибка при обращении к модели: {str(e)}"
 
     def execute_safe_command(self, command: str) -> Optional[str]:
         lower = command.lower().strip()
@@ -442,6 +559,7 @@ class Agent:
             
         except Exception as e:
             error_msg = f"Произошла ошибка: {str(e)}"
+            print(f"⚠️ {error_msg}")
             if voice_output and self.voice:
                 self.voice.speak_with_emotion("Произошла ошибка, попробуйте ещё раз", "грусть")
             return error_msg
@@ -449,18 +567,18 @@ class Agent:
     def start_voice_mode(self):
         """Запускает голосовой режим."""
         if not self.voice:
-            print("⚠️ Голосовой интерфейс недоступен")
+            print("⚠️ AEC Voice Interface недоступен")
             return
 
         if self.voice_mode:
             print("🎤 Голосовой режим уже включён")
             return
 
-        print("\n🎤 Запуск голосового режима...")
-        print("   Говорите в микрофон, я буду отвечать голосом")
+        print("\n🎤 Запуск голосового режима с AEC...")
+        print("   Микрофон всегда активен, эхо подавляется автоматически")
+        print("   Говорите в любой момент — агент вас услышит")
         print("   (Для выхода скажите 'выход' или введите 'exit')\n")
         
-        # Флаг для предотвращения повторной обработки
         processing = False
         
         def on_transcription(text):
@@ -498,17 +616,16 @@ class Agent:
                 print(f"❌ Ошибка: {e}")
             finally:
                 processing = False
-                # Не вызываем _schedule_asr_restart - монитор сам всё сделает
 
         try:
             if self.voice.start_listening(on_transcription):
                 self.voice_mode = True
-                print("🎤 Голосовой режим активирован")
+                print("🎤 Голосовой режим с AEC активирован")
                 
                 if not self._welcome_said:
                     self._welcome_said = True
-                    greeting = "Привет! Я Джарвис, ваш голосовой помощник."
-                    self.voice.speak_with_emotion(greeting, "радость", async_mode=False)
+                    greeting = "Привет! Я Джарвис, ваш голосовой помощник. Я всегда слышу вас благодаря AEC."
+                    self.voice.speak_with_emotion(greeting, "радость", async_mode=True)
             else:
                 print("❌ Не удалось запустить голосовой режим")
                 
@@ -517,6 +634,7 @@ class Agent:
             self.voice_mode = False
 
     def stop_voice_mode(self):
+        """Останавливает голосовой режим."""
         if not self.voice:
             return
 
@@ -533,31 +651,38 @@ class Agent:
         if self.voice:
             self.voice.stop()
         
-        print(f"📊 Статистика: обработано {self.command_count} команд")
+        stats = self.router.get_stats()
+        print(f"\n📊 Статистика маршрутизации:")
+        print(f"   • Быстрые модели (7B): {stats['fast']}")
+        print(f"   • Сложные модели (27B): {stats['smart']}")
+        print(f"   • Модели для изображений: {stats['vision']}")
+        print(f"\n📊 Всего команд: {self.command_count}")
         print("👋 До свидания!")
 
 
 # ---------- Точка входа ----------
 def main():
-    print("=" * 60)
-    print(f"🤖 {CONFIG['agent']['name']} — улучшенный ИИ-помощник")
-    print("=" * 60)
+    print("=" * 70)
+    print(f"🤖 {CONFIG['agent']['name']} — ИИ-помощник с AEC")
+    print("=" * 70)
     print("\n💡 Особенности:")
-    print("   🎯 Vosk ASR — потоковое распознавание речи")
+    print("   🎯 AEC (Acoustic Echo Cancellation) — подавление эха")
+    print("   🎤 Микрофон всегда активен — full-duplex коммуникация")
     print("   🔊 Silero TTS — естественный синтез речи")
     print("   🎭 Эмоциональная окраска ответов")
-    print("   🎤 Постоянное прослушивание микрофона")
+    print("   🧠 Умная маршрутизация: 7B для простых задач, 27B для сложных")
     print("   💬 Консольный ввод для тестирования")
-    print("=" * 60)
+    print("=" * 70)
     print("\n📌 Команды:")
-    print("   - Скажите что-нибудь в микрофон")
+    print("   - Говорите в микрофон в любой момент")
     print("   - Введите 'exit' в консоли для выхода")
     print("   - Скажите 'выход' голосом для выхода")
-    print("=" * 60)
+    print("=" * 70)
     print()
 
     agent = Agent()
 
+    # Запускаем голосовой режим
     agent.start_voice_mode()
 
     def console_input():
@@ -592,6 +717,9 @@ def main():
             time.sleep(0.1)
     except KeyboardInterrupt:
         print("\n⏹️ Прерывание...")
+    except Exception as e:
+        print(f"\n❌ Критическая ошибка: {e}")
+    finally:
         agent.stop()
 
 

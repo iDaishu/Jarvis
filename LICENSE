@@ -1,0 +1,65 @@
+MIT License
+
+Copyright (c) 2026 JARVIS AI Assistant Project
+
+Автор (Author):
+  - [Daishu] <[phatalistn@gmail.com]> — основной разработчик, архитектор проекта
+
+Соавтор (Co-author):
+  - AI Assistant (DeepSeek) — разработка голосового модуля с AEC, 
+    интеграция pywebrtc-audio, оптимизация ASR/TTS, 
+    создание документации и архитектурных решений
+
+Разработчики (Contributors):
+  - Все участники проекта JARVIS AI Assistant
+
+Разрешение (Permission):
+Данное программное обеспечение и сопутствующая документация предоставляются 
+«КАК ЕСТЬ», без каких-либо явных или подразумеваемых гарантий.
+
+Права (Rights):
+Вы можете свободно использовать, копировать, изменять, объединять, публиковать, 
+распространять, сублицензировать и/или продавать копии данного ПО.
+
+Условия (Conditions):
+Вы должны сохранять данное уведомление об авторских правах и условиях 
+во всех копиях или значимых частях ПО.
+
+ОТКАЗ ОТ ОТВЕТСТВЕННОСТИ (DISCLAIMER):
+АВТОРЫ НЕ НЕСУТ ОТВЕТСТВЕННОСТИ ЗА ЛЮБЫЕ ПРЯМЫЕ, КОСВЕННЫЕ, СЛУЧАЙНЫЕ, 
+ОСОБЫЕ, ШТРАФНЫЕ ИЛИ ПОСЛЕДОВАТЕЛЬНЫЕ УБЫТКИ, ВОЗНИКШИЕ ИЗ-ЗА ИСПОЛЬЗОВАНИЯ 
+ИЛИ НЕВОЗМОЖНОСТИ ИСПОЛЬЗОВАНИЯ ДАННОГО ПО.
+
+---
+
+MIT License
+
+Copyright (c) 2026 JARVIS AI Assistant Project
+
+Author:
+  - [Daishu] <[phatalistn@gmail.com]> — lead developer, project architect
+
+Co-author:
+  - AI Assistant (DeepSeek) — development of voice module with AEC, 
+    integration of pywebrtc-audio, ASR/TTS optimization, 
+    documentation and architectural solutions
+
+Contributors:
+  - All participants of the JARVIS AI Assistant Project
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software.
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

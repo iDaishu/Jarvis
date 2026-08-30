@@ -145,7 +145,31 @@ class EmotionTTS:
             for marker in markers:
                 clean_text = clean_text.replace(marker, "")
         
+        # Заменяем проблемные символы для Silero
+        # Цифры нужно заменять словами или убирать
+        clean_text = re.sub(r'(\d+)', lambda m: self._number_to_words(m.group(1)), clean_text)
+        
+        # Убираем специальные символы
+        clean_text = re.sub(r'[^\w\s.,!?-]', ' ', clean_text)
+        
         clean_text = re.sub(r'\s+', ' ', clean_text).strip()
         clean_text = re.sub(r'([.!?])', r'\1 ', clean_text)
         
         return clean_text, params, emotion
+
+    def _number_to_words(self, num: str) -> str:
+        """Преобразует число в слова."""
+        # Простое преобразование для цифр
+        digit_map = {
+            '0': 'ноль',
+            '1': 'один',
+            '2': 'два',
+            '3': 'три',
+            '4': 'четыре',
+            '5': 'пять',
+            '6': 'шесть',
+            '7': 'семь',
+            '8': 'восемь',
+            '9': 'девять',
+        }
+        return ' '.join(digit_map.get(d, d) for d in num)
