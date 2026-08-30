@@ -32,16 +32,16 @@ voice:
   
   # ASR настройки
   asr:
-    primary: "whisper"  # whisper, vosk
-    whisper_model: "small"  # tiny, base, small, medium, large
+    primary: "vosk"  # vosk (рекомендуется), whisper
+    vosk_model: "vosk-model-ru-0.22"
     sample_rate: 16000
-    vad_mode: 1
+    partial_results: true
   
   # TTS настройки
   tts:
-    primary: "silero"  # silero, piper
+    primary: "silero"  # silero, pyttsx3
     language: "ru"
-    speaker: "xenia"  # xenia (женский), eugene (мужской)
+    speaker: "xenia"
     rate: 170
     volume: 1.0
   

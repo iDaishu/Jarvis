@@ -1,18 +1,18 @@
-# voice/enhanced_voice_interface.py (с fallback TTS)
+# voice/enhanced_voice_interface.py
+"""Голосовой интерфейс с надёжным перезапуском ASR."""
 
 import threading
-import time
 import queue
+import time
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any
 import numpy as np
 
-from .whisper_asr import WhisperASR
+from .vosk_asr import VoskASR
 from .noise_reduction import NoiseReducer
 from .emotional_tts import EmotionTTS
 from .voice_profile import VoiceProfile
 
-# Пробуем импортировать TTS
 try:
     from .silero_tts import SileroTTS
     SILERO_AVAILABLE = True
@@ -25,79 +25,103 @@ try:
 except ImportError:
     PYTTSX3_AVAILABLE = False
 
+
 class EnhancedVoiceInterface:
-    """Голосовой интерфейс с улучшенным ASR и TTS."""
+    """Голосовой интерфейс с надёжным перезапуском ASR."""
     
-    def __init__(self, config: Optional[Dict[str, Any]] = None,
-                 base_dir: Optional[Path] = None):
+    def __init__(
+        self,
+        config: Optional[Dict[str, Any]] = None,
+        base_dir: Optional[Path] = None
+    ):
         self.base_dir = base_dir or Path(__file__).resolve().parent.parent
         self.config = config or {}
+        self.sample_rate = 16000
         
         # Пути
         self.memory_dir = self.base_dir / "memory"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         
-        # TTS engine (pyttsx3 как резерв)
+        # TTS engine
         self.tts_engine = None
         
-        # Инициализация компонентов
-        self._init_components()
+        # Компоненты
+        self.asr = None
+        self.tts = None
+        self.noise_reducer = None
+        self.emotion_tts = None
+        self.voice_profile = None
         
         # Состояние
         self.is_listening = False
+        self._is_speaking = False
+        self.is_processing = False
         self.command_queue = queue.Queue()
         self.running = True
-        self.is_speaking = False
         self._lock = threading.Lock()
+        
+        # Защита от эхо
+        self.speech_lock = threading.Lock()
+        self.speech_cooldown = 0.8  # Уменьшил до 0.8 сек
+        self.last_speech_time = 0
+        
+        # Для перезапуска ASR
+        self._asr_restart_needed = False
+        self._restart_thread = None
+        self._monitor_running = True
+        self._asr_starting = False  # Флаг, что ASR запускается
+        
+        # Callback
+        self.on_transcription = None
         
         # Статистика
         self.stats = {
             "commands_processed": 0,
-            "listening_time": 0,
             "asr_errors": 0,
-            "tts_errors": 0
+            "tts_errors": 0,
+            "echo_prevented": 0,
+            "asr_restarts": 0
         }
         
-        # Запуск обработки
+        # Инициализация
+        self._init_components()
+        
+        # Запускаем обработку
         self._start_worker()
+        
+        # Запускаем фоновый поток для перезапуска ASR
+        self._start_restart_monitor()
         
         print("✅ Enhanced Voice Interface готов")
     
     def _init_components(self):
         """Инициализирует все компоненты."""
-        # ASR - Whisper
         self.asr = self._init_asr()
-        
-        # TTS - пробуем Silero, затем pyttsx3
         self.tts = self._init_tts()
-        
-        # Шумоподавление
         self.noise_reducer = self._init_noise_reducer()
-        
-        # Эмоциональный TTS
         self.emotion_tts = self._init_emotion_tts()
-        
-        # Профиль голоса
         self.voice_profile = self._init_voice_profile()
     
     def _init_asr(self):
         """Инициализация ASR."""
         asr_config = self.config.get('asr', {})
-        model_size = asr_config.get('whisper_model', 'small')
-        language = asr_config.get('language', 'ru')
+        model_path = asr_config.get('model_path', 'models/vosk/vosk-model-ru-0.22')
         
         try:
-            asr = WhisperASR(model_size=model_size, language=language)
-            print(f"✅ ASR: Whisper ({model_size})")
+            asr = VoskASR(
+                model_path=Path(model_path),
+                sample_rate=self.sample_rate,
+                partial_results=True
+            )
+            print("✅ ASR: Vosk")
             return asr
         except Exception as e:
-            print(f"❌ Ошибка инициализации Whisper: {e}")
-            print("   Установите: pip install openai-whisper")
+            print(f"❌ Ошибка инициализации Vosk: {e}")
+            print("💡 Запустите: python download_vosk_model.py")
             return None
     
     def _init_tts(self):
         """Инициализация TTS с fallback."""
-        # Пробуем Silero
         if SILERO_AVAILABLE:
             try:
                 tts_config = self.config.get('tts', {})
@@ -115,7 +139,6 @@ class EnhancedVoiceInterface:
             try:
                 self.tts_engine = pyttsx3.init()
                 
-                # Настройка голоса
                 voices = self.tts_engine.getProperty('voices')
                 for voice in voices:
                     if 'ru' in str(voice.languages) or 'Russian' in voice.name:
@@ -125,37 +148,42 @@ class EnhancedVoiceInterface:
                 self.tts_engine.setProperty('rate', 170)
                 print("✅ TTS: pyttsx3 (fallback)")
                 
-                # Создаём обёртку для совместимости
                 class Pyttsx3Wrapper:
                     def __init__(self, engine):
                         self.engine = engine
-                        self.is_speaking = False
+                        self._is_speaking = False
+                        self._lock = threading.Lock()
+                    
+                    @property
+                    def is_speaking(self):
+                        return self._is_speaking
                     
                     def speak(self, text, async_mode=True, **kwargs):
                         if not text:
                             return False
                         try:
-                            self.is_speaking = True
-                            self.engine.say(text)
-                            if not async_mode:
-                                self.engine.runAndWait()
-                            else:
-                                # Для асинхронности запускаем в отдельном потоке
-                                import threading
-                                def _speak():
+                            with self._lock:
+                                self._is_speaking = True
+                                self.engine.say(text)
+                                if not async_mode:
                                     self.engine.runAndWait()
-                                    self.is_speaking = False
-                                thread = threading.Thread(target=_speak, daemon=True)
-                                thread.start()
+                                    self._is_speaking = False
+                                else:
+                                    def _speak():
+                                        self.engine.runAndWait()
+                                        self._is_speaking = False
+                                    thread = threading.Thread(target=_speak, daemon=True)
+                                    thread.start()
                             return True
                         except Exception as e:
                             print(f"⚠️ Ошибка pyttsx3: {e}")
-                            self.is_speaking = False
+                            self._is_speaking = False
                             return False
                     
                     def stop(self):
                         try:
                             self.engine.stop()
+                            self._is_speaking = False
                         except:
                             pass
                 
@@ -164,7 +192,6 @@ class EnhancedVoiceInterface:
             except Exception as e:
                 print(f"⚠️ Ошибка pyttsx3: {e}")
         
-        # Если ничего не работает
         print("❌ TTS не доступен")
         return None
     
@@ -173,11 +200,12 @@ class EnhancedVoiceInterface:
         nr_config = self.config.get('noise_reduction', {})
         if nr_config.get('enabled', True):
             try:
+                from .noise_reduction import NoiseReducer
                 reducer = NoiseReducer()
                 print("✅ Шумоподавление включено")
                 return reducer
             except Exception as e:
-                print(f"⚠️ Ошибка инициализации шумоподавления: {e}")
+                print(f"⚠️ Ошибка шумоподавления: {e}")
         return None
     
     def _init_emotion_tts(self):
@@ -188,7 +216,7 @@ class EnhancedVoiceInterface:
                 print("✅ Эмоциональный TTS включён")
                 return emotion
             except Exception as e:
-                print(f"⚠️ Ошибка инициализации эмоционального TTS: {e}")
+                print(f"⚠️ Ошибка эмоционального TTS: {e}")
         return None
     
     def _init_voice_profile(self):
@@ -197,19 +225,164 @@ class EnhancedVoiceInterface:
             profile_path = self.memory_dir / "voice_profile.json"
             profile = VoiceProfile(profile_path)
             if profile.is_calibrated():
-                print(f"✅ Профиль голоса загружен ({profile.get_stats()['sample_count']} образцов)")
+                print(f"✅ Профиль голоса загружен")
             else:
                 print("📝 Профиль голоса не калиброван")
             return profile
         except Exception as e:
-            print(f"⚠️ Ошибка инициализации профиля: {e}")
+            print(f"⚠️ Ошибка профиля: {e}")
         return None
     
-    def speak(self, text: str, async_mode: bool = True,
-              emotion: Optional[str] = None,
-              speed: float = 1.0, pitch: float = 1.0,
-              energy: float = 1.0) -> bool:
-        """Озвучивание с эмоциональной окраской."""
+    @property
+    def is_speaking(self):
+        """Возвращает, говорит ли агент."""
+        if self.tts and hasattr(self.tts, 'is_speaking'):
+            return self.tts.is_speaking
+        return self._is_speaking
+    
+    def _can_listen(self) -> bool:
+        """Проверяет, можно ли слушать."""
+        if self.is_speaking:
+            return False
+        if time.time() - self.last_speech_time < self.speech_cooldown:
+            return False
+        return True
+    
+    def _on_asr_result(self, text: str):
+        """Вызывается при результате ASR."""
+        if not self._can_listen():
+            self.stats["echo_prevented"] += 1
+            return
+        
+        if text and len(text) > 1:
+            self.stats["commands_processed"] += 1
+            self.command_queue.put(text)
+            # Помечаем, что нужен перезапуск ASR, но с задержкой
+            self._schedule_asr_restart()
+    
+    def _schedule_asr_restart(self):
+        """Планирует перезапуск ASR через задержку."""
+        def delayed_restart():
+            # Ждём, пока закончится обработка и речь
+            time.sleep(self.speech_cooldown + 0.5)
+            # Проверяем, не говорит ли агент
+            while self.is_speaking:
+                time.sleep(0.2)
+            if self.is_listening and not self._asr_starting:
+                self._asr_restart_needed = True
+        
+        thread = threading.Thread(target=delayed_restart, daemon=True)
+        thread.start()
+    
+    def _start_worker(self):
+        """Запуск потока обработки команд."""
+        def worker():
+            while self.running:
+                try:
+                    text = self.command_queue.get(timeout=0.1)
+                    if text and self.on_transcription:
+                        self.is_processing = True
+                        try:
+                            self.on_transcription(text)
+                        finally:
+                            self.is_processing = False
+                            self.last_speech_time = time.time()
+                except queue.Empty:
+                    continue
+                except Exception as e:
+                    print(f"⚠️ Ошибка обработки: {e}")
+                    self.is_processing = False
+        
+        self.worker_thread = threading.Thread(target=worker, daemon=True)
+        self.worker_thread.start()
+    
+    def _start_restart_monitor(self):
+        """Фоновый поток для перезапуска ASR."""
+        def monitor():
+            while self.running and self._monitor_running:
+                try:
+                    # Проверяем, нужен ли перезапуск
+                    if (self._asr_restart_needed and 
+                        self.is_listening and 
+                        not self.is_speaking and 
+                        not self.is_processing and
+                        not self._asr_starting):
+                        
+                        self._asr_restart_needed = False
+                        # Перезапускаем ASR
+                        self._restart_asr()
+                    
+                    time.sleep(0.5)
+                except Exception as e:
+                    print(f"⚠️ Ошибка в мониторе: {e}")
+                    time.sleep(1)
+        
+        self.monitor_thread = threading.Thread(target=monitor, daemon=True)
+        self.monitor_thread.start()
+        print("🔄 Монитор ASR запущен")
+    
+    def _restart_asr(self):
+        """Перезапускает ASR."""
+        if not self.asr or not self.is_listening:
+            return
+        
+        if self.is_speaking or self.is_processing:
+            return
+        
+        self._asr_starting = True
+        
+        try:
+            # Останавливаем текущий ASR
+            self.asr.stop()
+            time.sleep(0.2)
+            
+            # Сбрасываем и запускаем заново
+            self.asr.reset()
+            
+            # Обёртка для on_final с защитой от дублирования
+            last_final_text = [""]
+            last_final_time = [0]
+            
+            def on_final(text):
+                # Защита от дублирования
+                current_time = time.time()
+                if text == last_final_text[0] and current_time - last_final_time[0] < 2.0:
+                    return
+                last_final_text[0] = text
+                last_final_time[0] = current_time
+                self._on_asr_result(text)
+            
+            def on_partial(text):
+                if self._can_listen():
+                    # Печатаем только если текст изменился
+                    if hasattr(self, '_last_partial') and self._last_partial != text:
+                        print(f"⌛ {text}", end="\r")
+                    self._last_partial = text
+            
+            def on_error(error):
+                if "input overflow" in str(error):
+                    return
+                print(f"\n⚠️ Ошибка ASR: {error}")
+                self.stats["asr_errors"] += 1
+                # При ошибке планируем перезапуск
+                if self.is_listening:
+                    self._schedule_asr_restart()
+            
+            self.asr.start_listening(
+                on_final=on_final,
+                on_partial=on_partial,
+                on_error=on_error
+            )
+            self.stats["asr_restarts"] += 1
+            
+        except Exception as e:
+            print(f"⚠️ Ошибка перезапуска ASR: {e}")
+            self._asr_restart_needed = True
+        finally:
+            self._asr_starting = False
+    
+    def speak(self, text: str, async_mode: bool = True, emotion: Optional[str] = None) -> bool:
+        """Озвучивает текст."""
         if not text or not text.strip():
             return False
         
@@ -217,76 +390,92 @@ class EnhancedVoiceInterface:
             print(f"🔊 {text}")
             return False
         
+        # Останавливаем ASR перед речью
+        if self.asr:
+            try:
+                self.asr.stop()
+            except:
+                pass
+        
         try:
             clean_text = text
             
-            # Добавляем эмоциональную окраску (только для текста)
+            # Эмоциональная окраска
             if self.emotion_tts:
-                clean_text, params, emotion_name = self.emotion_tts.enhance_text(text)
-                speed = params.get('speed', speed)
-                energy = params.get('energy', energy)
+                if emotion:
+                    emotions = self.emotion_tts.analyze_emotion(text)
+                    emotions[emotion] = 1.0
+                    for markers in self.emotion_tts.emotion_markers.values():
+                        for marker in markers:
+                            clean_text = clean_text.replace(marker, "")
+                else:
+                    clean_text, params, detected_emotion = self.emotion_tts.enhance_text(text)
+                    emotion = detected_emotion
             
-            # Проверяем длину
             if len(clean_text) > 500:
                 clean_text = clean_text[:500] + "..."
             
-            # Озвучиваем
-            self.is_speaking = True
+            # Блокируем прослушивание
+            self._is_speaking = True
+            self.last_speech_time = time.time()
+            self._asr_restart_needed = False
+            
+            # Останавливаем воспроизведение
+            if self.tts_engine:
+                try:
+                    self.tts_engine.stop()
+                except:
+                    pass
+            
+            # Говорим
             result = self.tts.speak(clean_text, async_mode)
-            if not async_mode:
-                self.is_speaking = False
+            
+            # Снимаем блокировку через 0.5 секунды
+            def release_lock():
+                time.sleep(0.5)
+                self._is_speaking = False
+                # Планируем перезапуск ASR после речи
+                if self.is_listening:
+                    self._schedule_asr_restart()
+            
+            threading.Thread(target=release_lock, daemon=True).start()
+            
             return result
             
         except Exception as e:
             print(f"⚠️ Ошибка озвучивания: {e}")
             self.stats["tts_errors"] += 1
-            self.is_speaking = False
+            self._is_speaking = False
+            if self.is_listening:
+                self._schedule_asr_restart()
             return False
     
-    def speak_with_emotion(self, text: str, emotion: str, 
-                          async_mode: bool = True) -> bool:
-        """Озвучивает текст с указанной эмоцией."""
+    def speak_with_emotion(self, text: str, emotion: str = "радость", async_mode: bool = True) -> bool:
         return self.speak(text, async_mode, emotion=emotion)
     
     def start_listening(self, on_transcription: Optional[Callable] = None):
-        """Запуск прослушивания."""
+        """Запускает прослушивание."""
         if not self.asr:
-            print("⚠️ ASR не доступен")
+            print("❌ ASR не доступен")
             return False
         
         if self.is_listening:
-            print("🎤 Уже слушаю")
+            print("⚠️ Уже слушаю")
             return True
         
+        self.on_transcription = on_transcription
         self.is_listening = True
+        self._asr_restart_needed = True
+        self._asr_starting = False
         
-        def asr_callback(text: str, is_final: bool = False):
-            if is_final and text:
-                print(f"📝 Распознано: {text}")
-                self.stats["commands_processed"] += 1
-                
-                # Добавляем в профиль
-                if self.voice_profile:
-                    try:
-                        self.voice_profile.add_sample(text, np.array([0]))
-                    except:
-                        pass
-                
-                # Отправляем в очередь
-                self.command_queue.put((text, on_transcription))
-        
-        try:
-            self.asr.start_listening(asr_callback)
-            print("🎤 Прослушивание запущено")
-            return True
-        except Exception as e:
-            print(f"❌ Ошибка запуска прослушивания: {e}")
-            self.is_listening = False
-            return False
+        print("🎤 Прослушивание запущено")
+        return True
     
     def stop_listening(self):
         """Останавливает прослушивание."""
         self.is_listening = False
+        self._asr_restart_needed = False
+        self._asr_starting = False
         
         if self.asr:
             try:
@@ -296,83 +485,25 @@ class EnhancedVoiceInterface:
         
         print("⏹️ Прослушивание остановлено")
     
-    def _start_worker(self):
-        """Запуск потока обработки команд."""
-        def worker():
-            while self.running:
-                try:
-                    text, callback = self.command_queue.get(timeout=0.1)
-                    if callback and text:
-                        try:
-                            callback(text)
-                        except Exception as e:
-                            print(f"⚠️ Ошибка в callback: {e}")
-                except queue.Empty:
-                    continue
-                except Exception as e:
-                    print(f"⚠️ Ошибка обработки: {e}")
-        
-        self.worker_thread = threading.Thread(target=worker, daemon=True)
-        self.worker_thread.start()
-    
-    def is_speaking(self) -> bool:
-        """Проверяет, говорит ли агент."""
-        return self.is_speaking
-    
     def get_stats(self) -> Dict[str, Any]:
-        """Возвращает статистику."""
         stats = self.stats.copy()
-        
-        if self.voice_profile:
-            stats["voice_profile"] = self.voice_profile.get_stats()
-        
+        if self.asr:
+            stats["asr_stats"] = self.asr.get_stats()
         return stats
     
-    def calibrate_voice(self, duration: float = 3.0) -> bool:
-        """Калибрует голос пользователя."""
-        if not self.noise_reducer or not self.noise_reducer.is_available():
-            print("⚠️ Шумоподавление не доступно")
-            return False
-        
-        print(f"🎤 Калибровка голоса... Говорите {duration} секунд")
-        
-        try:
-            import sounddevice as sd
-            
-            # Записываем аудио
-            audio = sd.rec(int(duration * 16000), 16000, channels=1, dtype=np.float32)
-            sd.wait()
-            audio = audio.flatten()
-            
-            # Сохраняем профиль шума
-            result = self.noise_reducer.capture_noise_profile(audio, duration)
-            
-            if result:
-                print("✅ Калибровка завершена")
-                return True
-            else:
-                print("❌ Ошибка калибровки")
-                return False
-                
-        except Exception as e:
-            print(f"❌ Ошибка калибровки: {e}")
-            return False
-    
     def stop(self):
-        """Полная остановка интерфейса."""
+        """Полная остановка."""
         print("\n⏹️ Остановка голосового интерфейса...")
-        
         self.running = False
+        self._monitor_running = False
         self.is_listening = False
+        self._is_speaking = False
+        self._asr_restart_needed = False
+        self._asr_starting = False
         
-        # Останавливаем компоненты
-        if hasattr(self, 'asr') and self.asr:
-            try:
-                self.asr.stop()
-            except:
-                pass
+        self.stop_listening()
         
-        if hasattr(self, 'tts') and self.tts:
+        if self.tts:
             try:
                 self.tts.stop()
             except:
@@ -384,7 +515,6 @@ class EnhancedVoiceInterface:
             except:
                 pass
         
-        # Очищаем очередь
         while not self.command_queue.empty():
             try:
                 self.command_queue.get_nowait()

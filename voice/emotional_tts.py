@@ -1,4 +1,3 @@
-# voice/emotional_tts.py
 """TTS с эмоциональной окраской."""
 
 import re
@@ -54,7 +53,6 @@ class EmotionTTS:
             "ирония": {"speed": 0.95, "pitch": 1.05, "energy": 0.95},
         }
         
-        # Загружаем кастомные настройки
         if config_path and config_path.exists():
             try:
                 with open(config_path, 'r', encoding='utf-8') as f:
@@ -117,36 +115,26 @@ class EmotionTTS:
     
     def get_speaking_params(self, emotions: Dict[str, float]) -> Dict[str, float]:
         """Определяет параметры речи на основе эмоций."""
-        # Базовые параметры
-        params = {
-            "speed": 1.0,
-            "pitch": 1.0,
-            "energy": 1.0,
-        }
+        params = {"speed": 1.0, "pitch": 1.0, "energy": 1.0}
         
-        # Находим доминирующую эмоцию
         dominant = self.get_dominant_emotion(emotions)
         intensity = emotions.get(dominant, 0)
         
         if dominant in self.emotion_params and intensity > 0.2:
             base_params = self.emotion_params[dominant]
-            # Применяем параметры с учётом интенсивности
             for key in params:
                 delta = (base_params[key] - 1.0) * intensity
                 params[key] = 1.0 + delta
-                # Ограничиваем
                 params[key] = max(0.7, min(1.3, params[key]))
         
-        # Добавляем небольшие вариации
         params["speed"] = round(params["speed"], 2)
         params["pitch"] = round(params["pitch"], 2)
         params["energy"] = round(params["energy"], 2)
         
         return params
     
-    def enhance_text(self, text: str) -> Tuple[str, Dict[str, float]]:
+    def enhance_text(self, text: str) -> Tuple[str, Dict[str, float], str]:
         """Улучшает текст для синтеза."""
-        # Анализируем эмоции
         emotions = self.analyze_emotion(text)
         params = self.get_speaking_params(emotions)
         emotion = self.get_dominant_emotion(emotions)
@@ -157,67 +145,7 @@ class EmotionTTS:
             for marker in markers:
                 clean_text = clean_text.replace(marker, "")
         
-        # Убираем лишние пробелы
-        clean_text = re.sub(r'\s+', ' ', clean_text)
-        clean_text = clean_text.strip()
-        
-        # Добавляем паузы для лучшего звучания
+        clean_text = re.sub(r'\s+', ' ', clean_text).strip()
         clean_text = re.sub(r'([.!?])', r'\1 ', clean_text)
         
         return clean_text, params, emotion
-    
-    def get_emotion_description(self, emotion: str, intensity: float = 0.5) -> str:
-        """Возвращает описание эмоции."""
-        descriptions = {
-            "радость": "радостно и воодушевлённо",
-            "удивление": "с удивлением и восхищением",
-            "грусть": "грустно и задумчиво",
-            "злость": "решительно и категорично",
-            "восхищение": "восхищённо и восторженно",
-            "смех": "весело и игриво",
-            "задумчивость": "задумчиво и неторопливо",
-            "поддержка": "уверенно и ободряюще",
-            "ирония": "с иронией и улыбкой",
-            "нейтральная": "спокойно и нейтрально"
-        }
-        
-        if intensity < 0.2:
-            return "спокойно и нейтрально"
-        
-        return descriptions.get(emotion, "нейтрально")
-
-# Тестирование
-def test_emotion_tts():
-    """Тест эмоционального TTS."""
-    print("\n" + "="*60)
-    print("🎭 ТЕСТ ЭМОЦИОНАЛЬНОГО TTS")
-    print("="*60)
-    
-    emotion_tts = EmotionTTS()
-    
-    test_texts = [
-        "Отлично! У нас всё получилось! 😊",
-        "К сожалению, это не сработало... 😢",
-        "Невероятно! Вы просто гений! 😮",
-        "Не волнуйтесь, я вам помогу 💪",
-        "Что же нам делать? 🤔",
-        "Конечно, это же очевидно! 😏",
-    ]
-    
-    print("\n📌 Анализ эмоций:\n")
-    
-    for text in test_texts:
-        emotions = emotion_tts.analyze_emotion(text)
-        dominant = emotion_tts.get_dominant_emotion(emotions)
-        params = emotion_tts.get_speaking_params(emotions)
-        
-        print(f"📝 {text}")
-        print(f"   Эмоция: {dominant} (интенсивность: {emotions.get(dominant, 0):.2f})")
-        print(f"   Параметры: скорость={params['speed']:.2f}, "
-              f"высота={params['pitch']:.2f}, энергия={params['energy']:.2f}")
-        print()
-    
-    print("✅ Тест завершён.")
-
-if __name__ == "__main__":
-    test_emotion_tts()

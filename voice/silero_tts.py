@@ -1,10 +1,8 @@
-# voice/silero_tts.py
-"""Silero TTS - исправленная версия с использованием apply_tts."""
+"""Silero TTS для синтеза речи."""
 
 import torch
 import sounddevice as sd
 import numpy as np
-import tempfile
 import threading
 import queue
 import time
@@ -14,16 +12,20 @@ from typing import Optional, List
 class SileroTTS:
     """Синтез речи через Silero TTS."""
     
-    def __init__(self, model_name: str = "v5_4_ru", 
-                 speaker: str = "xenia",
-                 language: str = "ru",
-                 device: str = "cpu"):
+    def __init__(
+        self,
+        model_name: str = "v5_4_ru",
+        speaker: str = "xenia",
+        language: str = "ru",
+        device: str = "cpu",
+        sample_rate: int = 48000
+    ):
         self.model_name = model_name
         self.speaker = speaker
         self.language = language
         self.device = torch.device(device)
+        self.sample_rate = sample_rate
         self.model = None
-        self.sample_rate = 48000
         
         # Пути
         self.base_dir = Path(__file__).resolve().parent.parent
@@ -54,7 +56,7 @@ class SileroTTS:
         print(f"📂 Загрузка модели {model_path.name}...")
         try:
             self.model = torch.package.PackageImporter(str(model_path)).load_pickle("tts_models", "model")
-            print(f"✅ Silero TTS готов (модель: {model_path.name}, голос: {self.speaker})")
+            print(f"✅ Silero TTS готов (голос: {self.speaker})")
         except Exception as e:
             print(f"❌ Ошибка загрузки: {e}")
             raise
@@ -67,7 +69,6 @@ class SileroTTS:
         speaker = speaker or self.speaker
         
         try:
-            # Используем apply_tts - возвращает numpy массив напрямую
             audio_np = self.model.apply_tts(
                 text=text,
                 speaker=speaker,
@@ -75,10 +76,9 @@ class SileroTTS:
             )
             
             if audio_np is None or len(audio_np) == 0:
-                print("⚠️ Модель не вернула аудио")
                 return np.array([])
             
-            # Применяем нормализацию
+            # Нормализация
             if np.abs(audio_np).max() > 0:
                 audio_np = audio_np / np.abs(audio_np).max() * 0.95
             
@@ -86,12 +86,9 @@ class SileroTTS:
             
         except Exception as e:
             print(f"⚠️ Ошибка синтеза: {e}")
-            import traceback
-            traceback.print_exc()
             return np.array([])
     
-    def speak(self, text: str, async_mode: bool = True,
-              speaker: Optional[str] = None) -> bool:
+    def speak(self, text: str, async_mode: bool = True, speaker: Optional[str] = None) -> bool:
         """Озвучивает текст."""
         if not text or not text.strip() or self.model is None:
             return False
@@ -107,7 +104,6 @@ class SileroTTS:
         try:
             audio = self.synthesize(text, speaker)
             if len(audio) == 0:
-                print("⚠️ Пустое аудио")
                 return False
             
             self.is_speaking = True
@@ -132,12 +128,11 @@ class SileroTTS:
             except queue.Empty:
                 continue
             except Exception as e:
-                print(f"⚠️ Ошибка в TTS потоке: {e}")
+                print(f"⚠️ Ошибка в TTS: {e}")
     
     def _start_worker(self):
         self.thread = threading.Thread(target=self._worker, daemon=True)
         self.thread.start()
-        print("🔄 TTS поток запущен")
     
     def get_speakers(self) -> List[str]:
         if self.model and hasattr(self.model, 'speakers'):
@@ -145,6 +140,7 @@ class SileroTTS:
         return ['xenia', 'baya', 'natasha', 'ruslan', 'irina', 'kseniya']
     
     def stop(self):
+        """Останавливает TTS."""
         self.running = False
         if hasattr(self, 'thread') and self.thread:
             self.thread.join(timeout=1)
@@ -153,38 +149,3 @@ class SileroTTS:
                 self.queue.get_nowait()
             except:
                 break
-        print("⏹️ TTS остановлен")
-
-# ============================================
-# ТЕСТ
-# ============================================
-
-def test():
-    print("\n" + "="*60)
-    print("🔊 ТЕСТ SILERO TTS")
-    print("="*60)
-    
-    try:
-        tts = SileroTTS(speaker="xenia")
-        
-        test_texts = [
-            "Привет! Я Джарвис, ваш голосовой ассистент.",
-            "Как я могу вам помочь?",
-            "Отличная погода сегодня!"
-        ]
-        
-        for text in test_texts:
-            print(f"\n🔊 {text}")
-            tts.speak(text, async_mode=False)
-            time.sleep(0.5)
-        
-        tts.stop()
-        print("\n✅ Тест завершён!")
-        
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
-        print("\n📥 Используйте SAPI5 или pyttsx3 как альтернативу")
-        print("   pip install pyttsx3")
-
-if __name__ == "__main__":
-    test()

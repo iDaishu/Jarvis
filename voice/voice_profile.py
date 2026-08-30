@@ -51,33 +51,27 @@ class VoiceProfile:
                 print(f"⚠️ Ошибка сохранения профиля: {e}")
     
     def get_name(self) -> Optional[str]:
-        """Возвращает имя пользователя."""
         return self.profile.get("name")
     
     def set_name(self, name: str):
-        """Устанавливает имя пользователя."""
         self.profile["name"] = name.strip()
         self.save()
     
-    def add_sample(self, text: str, audio: np.ndarray, 
-                   emotion: str = "neutral") -> bool:
-        """Добавляет образец голоса пользователя."""
+    def add_sample(self, text: str, audio: np.ndarray, emotion: str = "neutral") -> bool:
         try:
             with self._lock:
                 self.profile["sample_count"] += 1
                 self.profile["calibrated"] = True
                 
-                # Сохраняем в историю
                 sample = {
                     "timestamp": datetime.now().isoformat(),
-                    "text": text[:100],  # Обрезаем для экономии места
+                    "text": text[:100],
                     "emotion": emotion,
                     "sample_number": self.profile["sample_count"]
                 }
                 
                 self.profile["history"].append(sample)
                 
-                # Ограничиваем историю
                 if len(self.profile["history"]) > 100:
                     self.profile["history"] = self.profile["history"][-100:]
                 
@@ -89,7 +83,6 @@ class VoiceProfile:
             return False
     
     def get_stats(self) -> Dict[str, Any]:
-        """Возвращает статистику профиля."""
         return {
             "sample_count": self.profile.get("sample_count", 0),
             "calibrated": self.profile.get("calibrated", False),
@@ -98,16 +91,13 @@ class VoiceProfile:
         }
     
     def is_calibrated(self) -> bool:
-        """Проверяет, калиброван ли профиль."""
         return self.profile.get("calibrated", False)
     
     def clear_history(self):
-        """Очищает историю."""
         self.profile["history"] = []
         self.save()
     
     def reset(self):
-        """Сбрасывает профиль."""
         self.profile = {
             "name": None,
             "voice_encoding": None,
@@ -120,44 +110,3 @@ class VoiceProfile:
             "history": []
         }
         self.save()
-
-# Тестирование
-def test_voice_profile():
-    """Тест профиля голоса."""
-    print("\n" + "="*60)
-    print("🎤 ТЕСТ ПРОФИЛЯ ГОЛОСА")
-    print("="*60)
-    
-    profile_path = Path("memory/test_voice_profile.json")
-    profile = VoiceProfile(profile_path)
-    
-    print(f"\n📂 Профиль: {profile_path}")
-    print(f"📊 Статистика: {profile.get_stats()}")
-    
-    # Добавляем тестовые образцы
-    test_texts = [
-        "Привет, я пользователь.",
-        "Как дела?",
-        "Отличная погода сегодня!",
-        "Помоги мне с задачей.",
-    ]
-    
-    for i, text in enumerate(test_texts):
-        # Создаём синтетическое аудио
-        audio = np.random.randn(16000) * 0.1
-        emotion = ["радость", "нейтральная", "удивление", "задумчивость"][i]
-        
-        profile.add_sample(text, audio, emotion)
-        print(f"✅ Добавлен образец {i+1}: '{text[:30]}...'")
-    
-    print(f"\n📊 Статистика после добавления: {profile.get_stats()}")
-    print(f"👤 Имя: {profile.get_name()}")
-    
-    # Очищаем
-    profile.clear_history()
-    print("\n🗑️ История очищена")
-    
-    print("\n✅ Тест завершён.")
-
-if __name__ == "__main__":
-    test_voice_profile()
