@@ -8,6 +8,7 @@ import numpy as np
 import sounddevice as sd
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any
+from dataclasses import dataclass
 
 from .audio_pipeline import AudioPipeline, PipelineConfig
 from .vosk_asr import VoskASR
@@ -27,19 +28,30 @@ except ImportError:
     PYTTSX3_AVAILABLE = False
 
 
+@dataclass
+class VoiceConfig:
+    """Конфигурация голосового интерфейса."""
+    sample_rate: int = 16000
+    stream_delay_ms: int = 100
+    asr_model: str = "models/vosk/vosk-model-ru-0.22"
+    tts_language: str = "ru"
+    tts_speaker: str = "xenia"
+    emotions_enabled: bool = True
+    silence_timeout: float = 0.6
+    min_phrase_length: int = 2
+    noise_gate_threshold: float = 0.005
+
+
 class AECVoiceInterface:
     """Голосовой интерфейс с AEC и AudioPipeline."""
     
     def __init__(
         self,
-        config: Optional[Dict[str, Any]] = None,
+        config: Optional[VoiceConfig] = None,
         base_dir: Optional[Path] = None,
-        sample_rate: int = 16000,
-        stream_delay_ms: int = 100
     ):
         self.base_dir = base_dir or Path(__file__).resolve().parent.parent
-        self.config = config or {}
-        self.sample_rate = sample_rate
+        self.config = config or VoiceConfig()
         
         # Компоненты
         self.asr = None
@@ -52,11 +64,16 @@ class AECVoiceInterface:
         self.is_listening = False
         self._is_speaking = False
         self.is_processing = False
-        self.command_queue = queue.Queue()
+        self.command_queue: queue.Queue = queue.Queue(maxsize=100)
         self.running = True
+        self._shutdown_event = threading.Event()
         
         # Callback
         self.on_transcription = None
+        
+        # Потоки
+        self._worker_thread: Optional[threading.Thread] = None
+        self._worker_stop_event = threading.Event()
         
         # Статистика
         self.stats = {
@@ -64,11 +81,12 @@ class AECVoiceInterface:
             "asr_errors": 0,
             "tts_errors": 0,
             "echo_prevented": 0,
+            "queue_size": 0,
         }
         
         # Инициализация
         self._init_components()
-        self._init_pipeline(stream_delay_ms)
+        self._init_pipeline()
         self._start_worker()
         
         print("✅ AEC Voice Interface готов")
@@ -84,9 +102,11 @@ class AECVoiceInterface:
         """Инициализация ASR."""
         try:
             asr = VoskASR(
-                model_path=Path('models/vosk/vosk-model-ru-0.22'),
-                sample_rate=self.sample_rate,
-                partial_results=True
+                model_path=Path(self.config.asr_model),
+                sample_rate=self.config.sample_rate,
+                partial_results=True,
+                silence_timeout=self.config.silence_timeout,
+                min_phrase_length=self.config.min_phrase_length,
             )
             print("✅ ASR: Vosk")
             return asr
@@ -98,7 +118,10 @@ class AECVoiceInterface:
         """Инициализация TTS."""
         if SILERO_AVAILABLE:
             try:
-                tts = SileroTTS(language='ru', speaker='xenia')
+                tts = SileroTTS(
+                    language=self.config.tts_language,
+                    speaker=self.config.tts_speaker
+                )
                 print("✅ TTS: Silero")
                 return tts
             except Exception as e:
@@ -119,6 +142,7 @@ class AECVoiceInterface:
                     def __init__(self, eng):
                         self.engine = eng
                         self._speaking = False
+                        self._lock = threading.Lock()
                     
                     @property
                     def is_speaking(self):
@@ -128,16 +152,19 @@ class AECVoiceInterface:
                         if not text:
                             return False
                         try:
-                            self._speaking = True
-                            self.engine.say(text)
-                            if not async_mode:
-                                self.engine.runAndWait()
-                                self._speaking = False
-                            else:
-                                def _speak():
+                            with self._lock:
+                                self._speaking = True
+                                self.engine.say(text)
+                                if not async_mode:
                                     self.engine.runAndWait()
                                     self._speaking = False
-                                threading.Thread(target=_speak, daemon=True).start()
+                                else:
+                                    def _speak():
+                                        try:
+                                            self.engine.runAndWait()
+                                        finally:
+                                            self._speaking = False
+                                    threading.Thread(target=_speak, daemon=True).start()
                             return True
                         except Exception as e:
                             print(f"⚠️ TTS ошибка: {e}")
@@ -150,6 +177,10 @@ class AECVoiceInterface:
                             self._speaking = False
                         except:
                             pass
+                    
+                    def synthesize(self, text):
+                        # pyttsx3 не поддерживает синтез без воспроизведения
+                        return None
                 
                 return TTSWrapper(engine)
             except Exception as e:
@@ -160,7 +191,7 @@ class AECVoiceInterface:
     
     def _init_emotion_tts(self):
         """Инициализация эмоционального TTS."""
-        if self.config.get('emotions', {}).get('enabled', True):
+        if self.config.emotions_enabled:
             try:
                 return EmotionTTS()
             except Exception as e:
@@ -176,11 +207,12 @@ class AECVoiceInterface:
             print(f"⚠️ Ошибка профиля: {e}")
             return None
     
-    def _init_pipeline(self, stream_delay_ms: int):
+    def _init_pipeline(self):
         """Инициализация AudioPipeline."""
         config = PipelineConfig(
-            sample_rate=self.sample_rate,
-            stream_delay_ms=stream_delay_ms
+            sample_rate=self.config.sample_rate,
+            stream_delay_ms=self.config.stream_delay_ms,
+            noise_gate_threshold=self.config.noise_gate_threshold,
         )
         
         self.pipeline = AudioPipeline(
@@ -199,23 +231,34 @@ class AECVoiceInterface:
     
     def _start_worker(self):
         """Запуск потока обработки команд."""
-        def worker():
-            while self.running:
-                try:
-                    text = self.command_queue.get(timeout=0.1)
-                    if text and self.on_transcription:
-                        self.is_processing = True
-                        try:
-                            self.on_transcription(text)
-                        finally:
-                            self.is_processing = False
-                except queue.Empty:
-                    continue
-                except Exception as e:
-                    print(f"⚠️ Ошибка обработки: {e}")
-                    self.is_processing = False
-        
-        threading.Thread(target=worker, daemon=True).start()
+        self._worker_stop_event.clear()
+        self._worker_thread = threading.Thread(target=self._worker, daemon=True, name="VoiceWorker")
+        self._worker_thread.start()
+        print("🧵 VoiceWorker запущен")
+    
+    def _worker(self):
+        """Фоновый поток для обработки команд."""
+        while self.running and not self._worker_stop_event.is_set():
+            try:
+                text = self.command_queue.get(timeout=0.1)
+                self.stats["queue_size"] = self.command_queue.qsize()
+                
+                if text and self.on_transcription:
+                    self.is_processing = True
+                    try:
+                        self.on_transcription(text)
+                        self.stats["commands_processed"] += 1
+                    except Exception as e:
+                        print(f"⚠️ Ошибка обработки команды: {e}")
+                    finally:
+                        self.is_processing = False
+                        self.command_queue.task_done()
+                        
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"⚠️ Ошибка в worker: {e}")
+                self.is_processing = False
     
     @property
     def is_speaking(self):
@@ -226,7 +269,7 @@ class AECVoiceInterface:
     
     def _on_asr_final(self, text: str):
         """Обработка финального результата ASR."""
-        if not text or len(text) < 2:
+        if not text or len(text) < self.config.min_phrase_length:
             return
         
         # Защита от дублирования
@@ -234,8 +277,11 @@ class AECVoiceInterface:
             return
         self._last_text = text
         
-        self.stats["commands_processed"] += 1
-        self.command_queue.put(text)
+        try:
+            self.command_queue.put_nowait(text)
+        except queue.Full:
+            print(f"⚠️ Очередь команд переполнена: {text[:30]}...")
+            self.stats["asr_errors"] += 1
     
     def _on_asr_partial(self, text: str):
         """Обработка частичного результата ASR."""
@@ -248,7 +294,7 @@ class AECVoiceInterface:
         self.stats["asr_errors"] += 1
     
     def speak(self, text: str, async_mode: bool = True, emotion: Optional[str] = None) -> bool:
-        """Озвучивает текст с оптимизацией скорости."""
+        """Озвучивает текст с поддержкой длинных фраз."""
         if not text or not text.strip():
             return False
         
@@ -256,100 +302,72 @@ class AECVoiceInterface:
             print(f"🔊 {text}")
             return False
         
-        # Проверяем, не говорим ли уже
-        if self.is_speaking and not async_mode:
-            return False
+        # ✅ Защита от зависания
+        if self._is_speaking and async_mode:
+            if time.time() - self._speaking_start_time > 15.0:
+                print("⚠️ TTS завис, принудительный сброс")
+                self._is_speaking = False
+                try:
+                    sd.stop()
+                except:
+                    pass
+            else:
+                print("⚠️ TTS уже говорит, пропуск")
+                return False
         
         self._is_speaking = True
+        self._speaking_start_time = time.time()
         
         try:
-            # Убираем эмодзи и лишние символы
             clean_text = text
+            emotion_params = None
+            emotion_name = emotion or "нейтральная"
+            
             if self.emotion_tts:
-                clean_text, _, _ = self.emotion_tts.enhance_text(text)
+                clean_text, emotion_params, emotion_name = self.emotion_tts.enhance_text(text)
             
-            # Укорачиваем текст если слишком длинный
-            if len(clean_text) > 500:
-                clean_text = clean_text[:500] + "..."
+            # ✅ Не обрезаем текст для длинных фраз
+            # TTS сам разобьёт на чанки
             
-            # Проверяем, есть ли метод synthesize
-            if hasattr(self.tts, 'synthesize'):
-                audio = self.tts.synthesize(clean_text)
-            else:
-                # Fallback на speak
-                result = self.tts.speak(clean_text, async_mode)
-                if not async_mode:
+            if async_mode:
+                # ✅ Используем асинхронный синтез с чанками
+                def on_tts_done(success):
+                    if not success:
+                        print("⚠️ TTS синтез не удался")
                     self._is_speaking = False
-                return result
-            
-            # Проверяем аудио
-            if audio is not None and len(audio) > 0:
-                if not isinstance(audio, np.ndarray):
-                    audio = np.array(audio, dtype=np.float32)
                 
-                if audio.dtype != np.float32:
-                    audio = audio.astype(np.float32)
+                # ✅ Передаём far_end сигнал в AEC через callback
+                def on_chunk_ready(audio):
+                    if audio is not None and len(audio) > 0:
+                        if self.pipeline:
+                            self.pipeline.feed_far_end(audio.copy())
                 
-                # Нормализация
-                max_val = np.abs(audio).max()
-                if max_val > 0:
-                    audio = audio / max_val * 0.95
-                
-                # Определяем частоту дискретизации TTS
-                tts_sample_rate = getattr(self.tts, 'sample_rate', 48000)
-                
-                # Отправляем эталон в AEC (ресемплинг до 16kHz)
-                if self.pipeline and tts_sample_rate != 16000:
-                    # Простой ресемплинг: берем каждый N-й семпл
-                    ratio = tts_sample_rate // 16000
-                    if ratio > 1 and len(audio) > ratio:
-                        audio_aec = audio[::ratio]
-                        if len(audio_aec) > 0:
-                            self.pipeline.set_far_end_audio(audio_aec.copy())
-                elif self.pipeline:
-                    self.pipeline.set_far_end_audio(audio.copy())
-                
-                # Воспроизводим с минимальной задержкой
-                if async_mode:
-                    def _play():
-                        try:
-                            sd.play(audio, tts_sample_rate, blocking=False)
-                            sd.wait()
-                        except Exception as e:
-                            print(f"⚠️ Ошибка воспроизведения: {e}")
-                        finally:
-                            self._is_speaking = False
-                    
-                    threading.Thread(target=_play, daemon=True).start()
-                    return True
-                else:
-                    sd.play(audio, tts_sample_rate)
+                # ✅ Используем синтез с чанками
+                return self.tts.synthesize_async(clean_text, on_tts_done)
+            else:
+                # Синхронный режим (для тестирования)
+                audio = self.tts.synthesize(clean_text)
+                if audio is not None and len(audio) > 0:
+                    if self.pipeline:
+                        self.pipeline.feed_far_end(audio.copy())
+                    sd.play(audio, self.config.sample_rate)
                     sd.wait()
                     self._is_speaking = False
                     return True
-            else:
-                # Fallback
-                result = self.tts.speak(clean_text, async_mode)
-                if not async_mode:
-                    self._is_speaking = False
                 else:
-                    def _release():
-                        time.sleep(0.5)
-                        self._is_speaking = False
-                    threading.Thread(target=_release, daemon=True).start()
-                return result
-                
+                    self._is_speaking = False
+                    return False
+                    
         except Exception as e:
             print(f"⚠️ Ошибка озвучивания: {e}")
             self.stats["tts_errors"] += 1
             self._is_speaking = False
             return False
-
     
     def speak_with_emotion(self, text: str, emotion: str = "радость", async_mode: bool = True) -> bool:
         return self.speak(text, async_mode, emotion=emotion)
     
-    def start_listening(self, on_transcription: Optional[Callable] = None):
+    def start_listening(self, on_transcription: Optional[Callable] = None) -> bool:
         """Запускает прослушивание."""
         if not self.asr:
             print("❌ ASR не доступен")
@@ -361,22 +379,21 @@ class AECVoiceInterface:
         
         self.on_transcription = on_transcription
         self.is_listening = True
+        self._last_text = ""
         
-        # Запускаем ASR
         self.asr.start_listening(
             on_final=self._on_asr_final,
             on_partial=self._on_asr_partial,
             on_error=self._on_asr_error
         )
         
-        # Запускаем AudioPipeline
         if self.pipeline:
             self.pipeline.start()
         
         print("🎤 Прослушивание запущено (AEC активен)")
         return True
     
-    def stop_listening(self):
+    def stop_listening(self) -> None:
         """Останавливает прослушивание."""
         self.is_listening = False
         
@@ -386,33 +403,56 @@ class AECVoiceInterface:
         if self.asr:
             self.asr.stop_listening()
         
+        # Очищаем очередь команд
+        while not self.command_queue.empty():
+            try:
+                self.command_queue.get_nowait()
+            except:
+                break
+        
         print("⏹️ Прослушивание остановлено")
     
     def get_stats(self) -> Dict[str, Any]:
         stats = self.stats.copy()
         stats["is_listening"] = self.is_listening
         stats["is_speaking"] = self.is_speaking
+        stats["is_processing"] = self.is_processing
+        stats["queue_size"] = self.command_queue.qsize()
+        
         if self.pipeline:
             stats["pipeline"] = self.pipeline.get_stats()
         if self.asr:
             stats["asr"] = self.asr.get_stats()
         return stats
     
-    def stop(self):
-        """Полная остановка."""
+    def stop(self, timeout: float = 2.0) -> None:
+        """Полная остановка с ожиданием потоков."""
         print("\n⏹️ Остановка AEC Voice Interface...")
+        
+        # 1. Сигнал остановки
         self.running = False
         self.is_listening = False
-        self._is_speaking = False
+        self._shutdown_event.set()
+        self._worker_stop_event.set()
         
+        # 2. Останавливаем прослушивание
         self.stop_listening()
         
+        # 3. Останавливаем TTS
         if self.tts and hasattr(self.tts, 'stop'):
             try:
                 self.tts.stop()
             except:
                 pass
         
+        # 4. Ждём завершения worker
+        if self._worker_thread and self._worker_thread.is_alive():
+            print("⏳ Ожидание завершения VoiceWorker...")
+            self._worker_thread.join(timeout=timeout)
+            if self._worker_thread.is_alive():
+                print("⚠️ VoiceWorker не завершился за отведённое время")
+        
+        # 5. Очищаем очередь
         while not self.command_queue.empty():
             try:
                 self.command_queue.get_nowait()
